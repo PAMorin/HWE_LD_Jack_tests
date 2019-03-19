@@ -140,7 +140,7 @@ write.csv(LD_MT, paste0(title,"_",stratum,"_LD_mt_correct.csv"))
 
 # Jackknife to detect genotypes that affect divergence from HWE.
 This may take several hours to run on a personal computer.
-```{r echo=FALSE, include=FALSE, cache=TRUE}
+```{r echo=FALSE, cache=TRUE}
 jack.result <- jackHWE(g, exclude.num = 1, min.hwe.samples = 5, show.progress = TRUE, use.genepop = FALSE)
 jack.inf <- jackInfluential(jack.result, alpha = 0.05)
 if(!is.null(jack.inf$influential)) write.csv(jack.inf$influential, file = paste0(title,"_",stratum,"_influential samples.csv"), row.names = FALSE)
