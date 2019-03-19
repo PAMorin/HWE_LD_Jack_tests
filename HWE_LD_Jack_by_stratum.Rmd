@@ -1,0 +1,155 @@
+---
+title: "LD"
+created: 3/19/2019
+output:
+  html_document: default
+  word_document: default
+By: Phillip Morin
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This document contains R-scripts to select genotypes based on a stratification scheme, then test the genotypes within the stratum for linkage disequilibrium (LD) and deviations from the expectations of Hardy-Weinberg Equilibrium (HWE). For each test, a p-value sequential correction for multiple tests (Holm, 1979) is applied, and the resulting adjusted p-values are output in .csv files. Other multiple-correction tests can be implemented instead of the Holm (1979) version.
+
+A Jacknife analysis to identify genotypes responsible for deviations from HWE is added as a way to detect samples or loci that have unlikely genotypes (given HWE expectations) and may be errors. 
+
+Holm, S. (1979), A simple sequentially rejective multiple test proceedure. Scand. J. Statist. 6:65-70. 
+Morin, P.A., R.G. LeDuc, F.I. Archer, K.K. Martien, R. Huebinger, J.W. Bickham, and B.L. Taylor. 2009. Significant deviations from Hardy-Weinberg equilibirum caused by low levels of microsatellite genotyping errors. Molecular Ecology Resources 9:498-504.
+
+# Load packages
+```{r include=FALSE}
+rm(list = ls())
+library(strataG)
+library(tidyverse)
+```
+
+
+# Load data files, and create gtypes object
+```{r}
+stratum <- "Wcoast4_num" # LD_Neah_Bay # LD_SanJuanIs
+title <- "HWE_LD_Jack"
+#dir.create(paste(title,"_",stratum, sep = ""))
+
+# read genotypes data file (diploid, codominant); in directory above current directory
+gdata <- read.csv("example_100_loci_genotable.csv", header = TRUE) # gdata should not have headers (missing data as NA, 00, 000, -999)
+# change labid column header name
+colnames(gdata)[colnames(gdata) == "id"] <- "labid"
+
+
+# read coordinates file (one line per individual, 2 columns for lat, lon; no headers, no missing data)
+# in directory above current directory
+coord <- read.csv("Strata_example_Ppho.csv", header = TRUE, na.strings=c("","NA"))
+# change labid column header name
+colnames(coord)[colnames(coord) == "LABID"] <- "labid"
+
+# combine data with coordinates (files can be different lengths)
+# select the specified stratum along with labid, Latitude and Longitude from the strata file
+strata.df.names <- c("labid", "Latitude", "Longitude", stratum)
+coord.strat <- coord[,colnames(coord) %in% strata.df.names]
+# then merge dataframes based on "labid" being a column name in both dataframes
+data <- merge(coord.strat,gdata)
+# remove sample data for samples not in the stratum
+data2 <- data %>% drop_na(stratum)
+# remove sample data if it doesn't have lat/lon
+data2 <- data2 %>% drop_na(Latitude)
+# Remove monomorphic loci then ane write a file of monomorphic loci for this stratification scheme.
+other <- data2 %>% select(labid, Latitude, Longitude) #create dataframe to add Lat/Lon to gtypes object
+strat_col <- which(colnames(data2)==stratum) # make sure correct column is used for stratum (in case Latitude and Longitude are not included in the merged data)
+
+g <- df2gtypes(data2, #this creates a df with 2 columns for id and hap
+               ploidy = 2,
+               id.col = 1,
+               strata.col = strat_col,
+               loc.col = 5,
+               other = other,
+               description = title)
+alleleNum<-numAlleles(g)
+not.mono <- names(alleleNum)[alleleNum > 1]
+not.mono.g <- g[, not.mono, ]
+not.mono.df <- as.data.frame(not.mono.g)
+not.mono.df$labid<-not.mono.df$ids
+not.mono.df$ids<-NULL
+# Add the lat/lon data back to the dataframe
+data3<-merge(not.mono.df,other)
+# re-order the dataframe to put Lat/Lon columns after labid's
+latlon <- c("labid", "Latitude", "Longitude")
+data3 <- data3[, c(latlon, setdiff(names(data3), latlon))]
+data3 <- data3 %>% arrange(desc(strata), labid) # sort by species column (decreasing) so that hybrids show up on map
+
+# save list of monomorphic loci to a .csv file
+mono<-alleleNum < 2
+monoloc<-names(mono) [which(mono==TRUE)]
+write.csv(monoloc, paste0(stratum,"_monomorphic_loci.csv"))
+
+#save summary of data (after excluding monomorphic loci)
+data_sum <- summary(not.mono.g)
+strata.df <- as.data.frame(data_sum$strata.smry)
+loc.df <- as.data.frame(data_sum$locus.smry)
+samp.df <- as.data.frame(data_sum$sample.smry)
+write.csv(strata.df, paste0(title,"_",stratum,"_data_sum.csv"))
+write.csv(loc.df, paste0(title,"_",stratum,"_loc_sum.csv"))
+write.csv(samp.df, paste0(title,"_",stratum,"_sample_sum.csv"))
+
+paste("number of individuals = ", data_sum$num.ind)
+paste("number of loci = ", data_sum$num.loc)
+
+```
+
+# Run HWE by stratum, then calculate p-value after mutliple test correction.
+(https://stat.ethz.ch/R-manual/R-devel/library/stats/html/p.adjust.html)
+
+```{r}
+hwe<-hweTest(g, use.genepop = FALSE, B = 100, show.output = FALSE,
+  delete.files = TRUE, label = "HWE")
+# B = the number of replicates for the Monte Carlo procedure; change to ≥1000 after testing
+
+# add correction for multiple tests
+hwe_holm_p <- p.adjust(hwe, method = "holm", n = length(hwe))
+# p.adjust.methods c("holm", "hochberg", "hommel", "bonferroni", "BH", "BY",
+#   "fdr", "none")
+
+hwe_MT <- cbind(hwe, hwe_holm_p)
+colnames(hwe_MT)[which(names(hwe_MT) == "hwe")] <- "hwe p-value"
+write.csv(hwe_MT, paste0(title,"_",stratum,"_HWE_mt_correct.csv"))
+
+
+```
+
+
+# Run LD by stratum
+This may take several hours to run on a personal computer. Example has reduced iterations for faster testing.
+```{r}
+LD <- LDgenepop(g, show.output = FALSE, delete.files = TRUE,
+  label = "linkage.genepop", dem = 100, batches = 10, iter = 500)
+#dem	integer giving the number of MCMC dememorisation or burnin steps. default=10000
+#batches	integer giving number of MCMC batches. default=100
+#iter	integer giving number of MCMC iterations. default=5000
+
+# add correction for multiple tests
+LD_holm_p <- p.adjust(LD$p.value, method = "holm", n = length(LD$p.value))
+# p.adjust.methods c("holm", "hochberg", "hommel", "bonferroni", "BH", "BY",
+#   "fdr", "none")
+LD_MT <- cbind(LD, LD_holm_p)
+
+write.csv(LD_MT, paste0(title,"_",stratum,"_LD_mt_correct.csv"))
+
+```
+
+# Jackknife to detect genotypes that affect divergence from HWE.
+This may take several hours to run on a personal computer.
+```{r echo=FALSE, include=FALSE, cache=TRUE}
+jack.result <- jackHWE(g, exclude.num = 1, min.hwe.samples = 5, show.progress = TRUE, use.genepop = FALSE)
+jack.inf <- jackInfluential(jack.result, alpha = 0.05)
+if(!is.null(jack.inf$influential)) write.csv(jack.inf$influential, file = paste0(title,"_",stratum,"_influential samples.csv"), row.names = FALSE)
+plot(jack.inf, main = "Cumulative frequency of odds-ratios")
+# A vertical dashed line  in th eplot marks the smallest influential exclusion
+```
+
+save data
+```{r}
+save.image(file = paste0(title,"_",stratum,"_LD_jack.rdata"))
+```
+
